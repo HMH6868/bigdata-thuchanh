@@ -1,0 +1,11 @@
+# Bỏ thư mục nặng, file không cần thiết
+data/
+output/
+DeTai1_Spotify/
+*.csv
+*.json
+*.parquet
+*.zip
+*.log
+__pycache__/
+.env
