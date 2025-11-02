@@ -1,9 +1,3 @@
-#!/usr/bin/env python3
-"""
-Optimized Recommendation Model for Spotify
-Best possible model without external dependencies
-"""
-
 import sys
 import logging
 from datetime import datetime
@@ -16,11 +10,11 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 def main():
-    """Main training pipeline - optimized collaborative filtering"""
+    """Main training pipeline - storage optimized"""
     sample_info = "1%" if len(sys.argv) <= 1 else sys.argv[1] if len(sys.argv) > 1 else "1%"
     
     logger.info("="*60)
-    logger.info(" SPOTIFY OPTIMIZED RECOMMENDATION MODEL")
+    logger.info(" SPOTIFY STORAGE-OPTIMIZED MODEL")
     logger.info("="*60)
     logger.info(f"Training on {sample_info} data")
     
@@ -32,15 +26,18 @@ def main():
         from pyspark.sql import functions as F
         from pyspark.sql.window import Window
         
-        # Create Spark session with optimized settings
+        # Create Spark session with storage optimization
         logger.info("Creating Spark session...")
         spark = SparkSession.builder \
-            .appName("SpotifyOptimizedModel") \
-            .config("spark.sql.shuffle.partitions", "200") \
+            .appName("SpotifyStorageOptimized") \
+            .config("spark.sql.shuffle.partitions", "100") \
             .config("spark.sql.adaptive.enabled", "true") \
             .config("spark.sql.adaptive.coalescePartitions.enabled", "true") \
-            .config("spark.driver.maxResultSize", "2g") \
+            .config("spark.driver.maxResultSize", "1g") \
             .config("spark.sql.broadcastTimeout", "36000") \
+            .config("spark.sql.parquet.compression.codec", "snappy") \
+            .config("spark.sql.adaptive.skewJoin.enabled", "true") \
+            .config("spark.sql.adaptive.localShuffleReader.enabled", "true") \
             .getOrCreate()
         
         spark.sparkContext.setLogLevel("WARN")
@@ -49,20 +46,18 @@ def main():
         # Configuration
         HDFS_BASE = "hdfs://namenode:9000/spotify_data/processed"
         
-        # Load processed data
+        # Load processed data WITHOUT caching to save memory
         logger.info("Loading processed data from HDFS...")
         
-        train_df = spark.read.parquet(f"{HDFS_BASE}/train").cache()
-        test_df = spark.read.parquet(f"{HDFS_BASE}/test").cache()
-        track_features = spark.read.parquet(f"{HDFS_BASE}/track_features").cache()
-        
-        # Force cache
-        train_count = train_df.count()
-        test_count = test_df.count()
+        train_df = spark.read.parquet(f"{HDFS_BASE}/train")
+        test_df = spark.read.parquet(f"{HDFS_BASE}/test")
+        # Don't cache track_features, load when needed
         
         # Get statistics
         num_playlists = train_df.select("playlist_idx").distinct().count()
         num_tracks = train_df.select("track_idx").distinct().count()
+        train_count = train_df.count()
+        test_count = test_df.count()
         
         logger.info(f"Data statistics:")
         logger.info(f"  Playlists: {num_playlists:,}")
@@ -70,22 +65,17 @@ def main():
         logger.info(f"  Train interactions: {train_count:,}")
         logger.info(f"  Test interactions: {test_count:,}")
         
-        # ============ MODEL 1: Advanced Popularity with Context ============
+        # ============ MODEL 1: Lightweight Popularity ============
         logger.info("="*40)
-        logger.info("MODEL 1: Context-aware Popularity")
+        logger.info("MODEL 1: Lightweight Popularity")
         logger.info("="*40)
         
-        # Calculate sophisticated track scores
+        # Simplified track scores
         track_scores = train_df.groupBy("track_idx", "track_uri").agg(
             F.count("playlist_idx").alias("frequency"),
             F.countDistinct("playlist_idx").alias("unique_playlists"),
-            # Position-based metrics
             F.avg(1.0 / (F.col("position") + 1)).alias("avg_position_weight"),
-            F.min("position").alias("best_position"),
-            F.avg("position").alias("avg_position"),
-            # Recency (lower position = more recent/important)
-            F.sum(F.when(F.col("position") < 10, 1).otherwise(0)).alias("top10_count"),
-            F.sum(F.when(F.col("position") < 5, 1).otherwise(0)).alias("top5_count")
+            F.sum(F.when(F.col("position") < 10, 1).otherwise(0)).alias("top10_count")
         )
         
         # Normalize scores
@@ -94,46 +84,40 @@ def main():
         
         track_scores = track_scores.withColumn(
             "popularity_score",
-            # Weighted combination of factors
-            (F.col("frequency") / max_freq) * 0.3 +  # Overall frequency
-            (F.col("unique_playlists") / max_unique) * 0.3 +  # Unique reach
-            F.col("avg_position_weight") * 0.2 +  # Position importance
-            (F.col("top5_count") / F.col("frequency")) * 0.1 +  # Top placement ratio
-            (F.col("top10_count") / F.col("frequency")) * 0.1  # Near-top placement ratio
+            (F.col("frequency") / max_freq) * 0.4 +
+            (F.col("unique_playlists") / max_unique) * 0.4 +
+            F.col("avg_position_weight") * 0.2
         )
         
-        logger.info(f"Calculated advanced scores for {track_scores.count():,} tracks")
+        logger.info(f"Calculated scores for {track_scores.count():,} tracks")
         
-        # ============ MODEL 2: Item-based Collaborative Filtering ============
+        # ============ MODEL 2: Minimal Co-occurrence ============
         logger.info("="*40)
-        logger.info("MODEL 2: Item-based Collaborative Filtering")
+        logger.info("MODEL 2: Minimal Co-occurrence")
         logger.info("="*40)
         
-        # Calculate track co-occurrence (which tracks appear together)
-        logger.info("Computing track co-occurrences...")
-        
-        # Get tracks per playlist (limit to reasonable size playlists)
+        # REDUCED co-occurrence to save storage
         playlist_tracks = train_df.groupBy("playlist_idx").agg(
             F.collect_list("track_idx").alias("tracks"),
             F.count("track_idx").alias("playlist_size")
         ).filter(
             (F.col("playlist_size") >= 5) & 
-            (F.col("playlist_size") <= 500)
+            (F.col("playlist_size") <= 50)  # REDUCED from 500
         )
         
-        # Sample for efficiency if needed
+        # Heavy sampling to reduce storage
         playlist_count = playlist_tracks.count()
-        if playlist_count > 2000:
-            playlist_tracks = playlist_tracks.sample(False, 2000.0/playlist_count, seed=42)
-            logger.info(f"Sampled to {playlist_tracks.count():,} playlists for co-occurrence")
+        if playlist_count > 300:  # REDUCED from 2000
+            playlist_tracks = playlist_tracks.sample(False, 300.0/playlist_count, seed=42)
+            logger.info(f"Sampled to {playlist_tracks.count():,} playlists")
         
-        # Self-join to create pairs (more efficient approach)
+        # Create pairs with limits
         tracks_exploded = playlist_tracks.select(
             "playlist_idx",
             F.explode("tracks").alias("track")
         )
         
-        # Create pairs by self-join
+        # Limit pair creation heavily
         track_pairs = tracks_exploded.alias("t1").join(
             tracks_exploded.alias("t2"),
             (F.col("t1.playlist_idx") == F.col("t2.playlist_idx")) & 
@@ -142,118 +126,70 @@ def main():
         ).select(
             F.col("t1.track").alias("track1"),
             F.col("t2.track").alias("track2")
-        )
+        ).limit(500000)  # HARD LIMIT to control storage
         
-        # Count co-occurrences
+        # Count with strong filter
         cooccurrence = track_pairs.groupBy("track1", "track2").agg(
             F.count("*").alias("cooccur_count")
-        )
-        
-        # Calculate similarity scores
-        track_counts = train_df.groupBy("track_idx").agg(
-            F.countDistinct("playlist_idx").alias("track_count")
-        )
-        
-        # Join to get individual track counts
-        cooccurrence = cooccurrence.join(
-            track_counts.select(
-                F.col("track_idx").alias("track1"),
-                F.col("track_count").alias("count1")
-            ),
-            on="track1"
-        ).join(
-            track_counts.select(
-                F.col("track_idx").alias("track2"),
-                F.col("track_count").alias("count2")
-            ),
-            on="track2"
-        )
-        
-        # Calculate Jaccard similarity
-        cooccurrence = cooccurrence.withColumn(
-            "similarity",
-            F.col("cooccur_count") / (F.col("count1") + F.col("count2") - F.col("cooccur_count"))
-        ).select("track1", "track2", "similarity", "cooccur_count")
-        
-        # Keep only strong similarities
-        cooccurrence = cooccurrence.filter(F.col("similarity") > 0.01)
+        ).filter(F.col("cooccur_count") >= 5)  # Only very strong connections
         
         logger.info(f"Computed {cooccurrence.count():,} track similarities")
         
-        # ============ MODEL 3: User-based Collaborative Filtering ============
+        # ============ GENERATE RECOMMENDATIONS ============
         logger.info("="*40)
-        logger.info("MODEL 3: User-based Recommendations")
-        logger.info("="*40)
-        
-        # For each playlist, find what tracks are popular among similar playlists
-        # Calculate playlist similarity based on common tracks
-        
-        # Get playlist profiles
-        playlist_profiles = train_df.groupBy("playlist_idx").agg(
-            F.collect_set("track_idx").alias("track_set"),
-            F.count("track_idx").alias("num_tracks"),
-            F.avg("position").alias("avg_position")
-        )
-        
-        logger.info(f"Created profiles for {playlist_profiles.count():,} playlists")
-        
-        # ============ GENERATE FINAL RECOMMENDATIONS ============
-        logger.info("="*40)
-        logger.info("Generating Final Recommendations")
+        logger.info("Generating Recommendations")
         logger.info("="*40)
         
-        # Get all playlists
-        all_playlists = train_df.select("playlist_idx").distinct()
-        
-        # Strategy 1: Popular tracks not in playlist
+        # Get existing tracks
         existing_tracks = train_df.select("playlist_idx", "track_idx").distinct()
         
-        # Get top tracks
-        top_tracks = track_scores.orderBy(F.desc("popularity_score")).limit(
-            min(5000, num_tracks)  # Limit candidate set for efficiency
-        )
+        # REDUCED candidate set
+        top_tracks = track_scores.orderBy(F.desc("popularity_score")).limit(800)  # REDUCED from 5000
         
-        # Create candidates
-        candidates = all_playlists.crossJoin(
-            top_tracks.select("track_idx", "track_uri", "popularity_score")
+        # Get playlists
+        all_playlists = train_df.select("playlist_idx").distinct()
+        
+        # Use broadcast join for efficiency
+        recommendations = all_playlists.join(
+            F.broadcast(top_tracks.select("track_idx", "track_uri", "popularity_score")),
+            how="cross"
         )
         
         # Remove existing tracks
-        recommendations = candidates.join(
+        recommendations = recommendations.join(
             existing_tracks,
             on=["playlist_idx", "track_idx"],
             how="left_anti"
         )
         
-        # Strategy 2: Add collaborative filtering boost
-        # For tracks that co-occur with playlist tracks, boost their scores
-        playlist_track_pairs = train_df.select("playlist_idx", "track_idx").alias("pt").join(
+        # Simplified collaborative filtering
+        cf_boost = train_df.select("playlist_idx", "track_idx").join(
             cooccurrence.select(
                 F.col("track1").alias("track_idx"),
                 F.col("track2").alias("rec_track"),
-                F.col("similarity")
+                F.lit(0.1).alias("cf_score")
             ),
             on="track_idx"
         ).groupBy("playlist_idx", "rec_track").agg(
-            F.max("similarity").alias("cf_score")
+            F.sum("cf_score").alias("total_cf_score")
         )
         
         # Combine scores
-        recommendations = recommendations.alias("r").join(
-            playlist_track_pairs.select(
+        recommendations = recommendations.join(
+            cf_boost.select(
                 F.col("playlist_idx"),
                 F.col("rec_track").alias("track_idx"),
-                F.col("cf_score")
+                F.col("total_cf_score").alias("cf_score")
             ),
             on=["playlist_idx", "track_idx"],
             how="left"
         )
         
-        # Final score: combine popularity and collaborative filtering
+        # Final score
         recommendations = recommendations.withColumn(
             "final_score",
-            F.coalesce(F.col("popularity_score"), F.lit(0.0)) * 0.6 +
-            F.coalesce(F.col("cf_score"), F.lit(0.0)) * 0.4
+            F.col("popularity_score") * 0.8 +
+            F.coalesce(F.col("cf_score"), F.lit(0.0)) * 0.2
         )
         
         # Rank recommendations
@@ -264,121 +200,70 @@ def main():
         
         logger.info("Recommendations generated successfully")
         
-        # ============ EVALUATE MODEL ============
+        # ============ QUICK EVALUATION ============
         logger.info("="*40)
-        logger.info("Evaluating Model Performance")
+        logger.info("Quick Evaluation")
         logger.info("="*40)
         
-        # Get test playlists
+        # Simple metrics
         test_playlists = test_df.select("playlist_idx").distinct()
-        test_recommendations = recommendations.join(
-            test_playlists,
-            on="playlist_idx",
-            how="inner"
-        )
-        
-        # Calculate metrics
+        test_recommendations = recommendations.join(test_playlists, on="playlist_idx", how="inner")
         test_tracks = test_df.select("playlist_idx", "track_idx").distinct()
         
-        # Precision at different K values
-        metrics = {}
-        for k in [10, 50, 100, 500]:
-            recs_at_k = test_recommendations.filter(F.col("rank") <= k)
-            hits_at_k = recs_at_k.join(
-                test_tracks,
-                on=["playlist_idx", "track_idx"],
-                how="inner"
-            ).count()
-            
-            total_recs_at_k = recs_at_k.count()
-            precision_at_k = hits_at_k / total_recs_at_k if total_recs_at_k > 0 else 0
-            metrics[f"precision_at_{k}"] = precision_at_k
-            logger.info(f"  Precision@{k}: {precision_at_k:.4f} ({hits_at_k:,} hits)")
+        # Precision@100
+        recs_at_100 = test_recommendations.filter(F.col("rank") <= 100)
+        hits_at_100 = recs_at_100.join(test_tracks, on=["playlist_idx", "track_idx"], how="inner").count()
+        total_recs_at_100 = recs_at_100.count()
+        precision_at_100 = hits_at_100 / total_recs_at_100 if total_recs_at_100 > 0 else 0
         
-        # Overall hit rate
-        total_hits = test_recommendations.join(
-            test_tracks,
-            on=["playlist_idx", "track_idx"],
-            how="inner"
-        ).count()
+        logger.info(f"  Precision@100: {precision_at_100:.4f}")
         
-        total_test_tracks = test_tracks.count()
-        hit_rate = total_hits / total_test_tracks if total_test_tracks > 0 else 0
-        metrics["hit_rate"] = hit_rate
-        
-        logger.info(f"  Overall Hit Rate: {hit_rate:.4f}")
-        logger.info(f"  Total Hits: {total_hits:,} / {total_test_tracks:,}")
-        
-        # Estimated MAP
-        estimated_map = (metrics["precision_at_10"] * 0.4 + 
-                        metrics["precision_at_50"] * 0.3 + 
-                        metrics["precision_at_100"] * 0.2 + 
-                        metrics["precision_at_500"] * 0.1)
-        
-        logger.info(f"  Estimated MAP@500: {estimated_map:.4f}")
-        
-        # ============ SAVE MODEL ============
+        # ============ SAVE MINIMAL DATA ONLY ============
         logger.info("="*40)
-        logger.info("Saving Model Artifacts")
+        logger.info("Saving Essential Data Only")
         logger.info("="*40)
         
-        # Save components
-        track_scores.write.mode("overwrite").parquet(f"{HDFS_BASE}/model/track_scores_optimized")
-        cooccurrence.write.mode("overwrite").parquet(f"{HDFS_BASE}/model/track_similarities")
-        recommendations.write.mode("overwrite").parquet(f"{HDFS_BASE}/model/recommendations_final")
+        # ONLY save final recommendations with compression
+        recommendations.write.mode("overwrite") \
+            .option("compression", "snappy") \
+            .parquet(f"{HDFS_BASE}/model/recommendations_final")
         
-        # Save metadata
+        # Minimal metadata only
         metadata_data = [{
             "timestamp": datetime.now().isoformat(),
-            "model_type": "Optimized_Hybrid_CF",
+            "model_type": "Storage_Optimized_CF",
             "sample": sample_info,
-            "hit_rate": float(hit_rate),
-            "precision_at_10": float(metrics["precision_at_10"]),
-            "precision_at_50": float(metrics["precision_at_50"]),
-            "precision_at_100": float(metrics["precision_at_100"]),
-            "precision_at_500": float(metrics["precision_at_500"]),
-            "estimated_map": float(estimated_map),
+            "precision_at_100": float(precision_at_100),
             "num_playlists": num_playlists,
-            "num_tracks": num_tracks,
-            "train_interactions": train_count,
-            "test_interactions": test_count
+            "num_tracks": num_tracks
         }]
         
         metadata_df = spark.createDataFrame(metadata_data)
-        metadata_df.write.mode("overwrite").parquet(f"{HDFS_BASE}/model/metadata_optimized")
+        metadata_df.write.mode("overwrite") \
+            .option("compression", "snappy") \
+            .parquet(f"{HDFS_BASE}/model/metadata")
+        
+        # DON'T SAVE these to reduce storage:
+        # track_scores.write... - REMOVED
+        # cooccurrence.write... - REMOVED
         
         # Calculate elapsed time
         elapsed_time = (datetime.now() - start_time).total_seconds()
         
         # ============ PRINT SUMMARY ============
         logger.info("="*60)
-        logger.info(" MODEL TRAINING COMPLETE!")
+        logger.info(" STORAGE-OPTIMIZED TRAINING COMPLETE!")
         logger.info("="*60)
         logger.info(f"Training time: {elapsed_time:.2f} seconds")
-        logger.info(f"Model: Optimized Hybrid Collaborative Filtering")
+        logger.info(f"Storage saved: Only essential files kept")
+        logger.info(f"Precision@100: {precision_at_100:.4f}")
         logger.info("="*60)
-        logger.info("Performance Summary:")
-        logger.info(f"  Precision@10:  {metrics['precision_at_10']:.4f}")
-        logger.info(f"  Precision@50:  {metrics['precision_at_50']:.4f}")
-        logger.info(f"  Precision@100: {metrics['precision_at_100']:.4f}")
-        logger.info(f"  Precision@500: {metrics['precision_at_500']:.4f}")
-        logger.info(f"  Hit Rate: {hit_rate:.4f}")
-        logger.info(f"  Estimated MAP@500: {estimated_map:.4f}")
-        logger.info("="*60)
-        
-        # Performance projection
-        logger.info("Expected Performance with More Data:")
-        logger.info(f"  10% data:  MAP ~{estimated_map*3:.3f}-{estimated_map*5:.3f}")
-        logger.info(f"  100% data: MAP ~{estimated_map*8:.3f}-{estimated_map*12:.3f}")
-        
-        # Improvement over baseline
-        baseline_map = 0.0047
-        if estimated_map > baseline_map:
-            improvement = (estimated_map - baseline_map) / baseline_map * 100
-            logger.info(f"  Improvement over baseline: {improvement:.0f}%")
-        
-        logger.info("="*60)
-        logger.info("Model saved successfully to HDFS")
+        logger.info("Saved files (compressed):")
+        logger.info(f"  {HDFS_BASE}/model/recommendations_final")
+        logger.info(f"  {HDFS_BASE}/model/metadata")
+        logger.info("Files NOT saved to reduce storage:")
+        logger.info("  - track_scores_optimized (removed)")
+        logger.info("  - track_similarities (removed)")
         logger.info("="*60)
         
         # Stop Spark

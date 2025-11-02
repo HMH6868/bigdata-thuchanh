@@ -1,9 +1,3 @@
-#!/usr/bin/env python3
-"""
-Preprocess Spotify Million Playlist Dataset
-Version without ML dependencies - using pure Spark SQL
-"""
-
 import sys
 import logging
 from datetime import datetime
@@ -16,16 +10,16 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 def main():
-    """Main execution"""
-    # Parse arguments
-    sample_rate = 0.01  # Default 1%
+    """Main execution - storage optimized"""
+    # Default to smaller sample to save storage
+    sample_rate = 0.005  # 0.5% instead of 1%
     if len(sys.argv) > 1:
         for i, arg in enumerate(sys.argv):
             if arg == '--sample' and i + 1 < len(sys.argv):
                 sample_rate = float(sys.argv[i + 1])
     
     logger.info("="*60)
-    logger.info(" SPOTIFY DATA PREPROCESSING PIPELINE")
+    logger.info(" STORAGE-OPTIMIZED PREPROCESSING")
     logger.info("="*60)
     logger.info(f"Sample rate: {sample_rate*100}%")
     
@@ -41,10 +35,13 @@ def main():
         )
         from pyspark.sql.window import Window
         
-        # Create Spark session
+        # Create Spark session with storage optimization
         logger.info("Creating Spark session...")
         spark = SparkSession.builder \
-            .appName("SpotifyPreprocess") \
+            .appName("SpotifyPreprocessOptimized") \
+            .config("spark.sql.parquet.compression.codec", "snappy") \
+            .config("spark.sql.adaptive.enabled", "true") \
+            .config("spark.sql.adaptive.coalescePartitions.enabled", "true") \
             .getOrCreate()
         
         spark.sparkContext.setLogLevel("WARN")
@@ -53,7 +50,7 @@ def main():
         # Configuration
         HDFS_BASE = "hdfs://namenode:9000/spotify_data"
         
-        # Define schemas
+        # Define schemas (keep same as before)
         track_schema = StructType([
             StructField("track_uri", StringType(), True),
             StructField("track_name", StringType(), True),
@@ -80,15 +77,15 @@ def main():
             StructField("description", StringType(), True)
         ])
         
-        # Step 1: Load data
-        logger.info("Step 1/6: Loading raw data from HDFS...")
+        # Step 1: Load data with early sampling
+        logger.info("Step 1/5: Loading raw data from HDFS...")
         
         playlists_df = spark.read \
             .option("multiLine", "true") \
             .schema(StructType([StructField("playlists", ArrayType(playlist_schema), True)])) \
             .json(f"{HDFS_BASE}/raw/*.json")
         
-        # Sample data if needed
+        # Sample data EARLY to reduce processing
         if sample_rate < 1.0:
             logger.info(f"Sampling {sample_rate*100}% of data...")
             playlists_df = playlists_df.sample(False, sample_rate, seed=42)
@@ -97,23 +94,20 @@ def main():
         playlists_df = playlists_df.select(F.explode("playlists").alias("playlist"))
         playlists_df = playlists_df.select("playlist.*")
         
-        # Cache for performance
-        playlists_df.cache()
-        
+        # Don't cache to save memory
         total_playlists = playlists_df.count()
         logger.info(f"Loaded {total_playlists:,} playlists")
         
-        # Step 2: Extract metadata
-        logger.info("Step 2/6: Extracting playlist metadata...")
+        # Step 2: Extract metadata (MINIMAL - only what's needed)
+        logger.info("Step 2/5: Extracting minimal metadata...")
         
+        # Skip detailed metadata to save storage
         playlist_meta = playlists_df.select(
-            "pid", "name", "num_tracks", "num_albums",
-            "num_artists", "num_followers", "num_edits",
-            "duration_ms", "modified_at"
+            "pid", "num_tracks"  # Only essential fields
         )
         
         # Step 3: Extract interactions
-        logger.info("Step 3/6: Extracting playlist-track interactions...")
+        logger.info("Step 3/5: Extracting interactions...")
         
         interactions = playlists_df.select(
             "pid",
@@ -121,23 +115,15 @@ def main():
         ).select(
             "pid",
             F.col("track.track_uri").alias("track_uri"),
-            F.col("track.artist_uri").alias("artist_uri"),
             F.col("track.pos").alias("position"),
-            F.col("track.track_name").alias("track_name"),
-            F.col("track.artist_name").alias("artist_name")
-        )
-        
-        # Add position score
-        interactions = interactions.withColumn(
-            "position_score",
-            1.0 / (F.col("position") + 1)
+            # Skip other fields to reduce storage
         )
         
         total_interactions = interactions.count()
         logger.info(f"Extracted {total_interactions:,} interactions")
         
-        # Step 4: Create indices manually using SQL
-        logger.info("Step 4/6: Creating numerical indices...")
+        # Step 4: Create indices
+        logger.info("Step 4/5: Creating numerical indices...")
         
         # Create playlist index
         unique_playlists = interactions.select("pid").distinct().orderBy("pid")
@@ -156,93 +142,81 @@ def main():
         # Join indices back to interactions
         indexed_df = interactions \
             .join(playlist_with_idx, on="pid", how="left") \
-            .join(track_with_idx, on="track_uri", how="left")
+            .join(track_with_idx, on="track_uri", how="left") \
+            .select("playlist_idx", "track_idx", "track_uri", "position")  # Only essential columns
         
         # Get counts
         num_unique_playlists = playlist_with_idx.count()
         num_unique_tracks = track_with_idx.count()
         logger.info(f"Created indices for {num_unique_playlists:,} playlists and {num_unique_tracks:,} tracks")
         
-        # Step 5: Compute track features
-        logger.info("Step 5/6: Computing track popularity features...")
+        # Step 5: Create train/test split
+        logger.info("Step 5/5: Creating train/test split...")
         
-        track_features = indexed_df.groupBy("track_uri", "track_idx").agg(
-            F.count("pid").alias("popularity"),
-            F.mean("position_score").alias("avg_position_score"),
-            F.first("track_name").alias("track_name"),
-            F.first("artist_name").alias("artist_name")
-        )
-        
-        # Normalize popularity
-        max_popularity = track_features.agg(F.max("popularity")).collect()[0][0]
-        track_features = track_features.withColumn(
-            "popularity_norm",
-            F.col("popularity") / max_popularity
-        )
-        
-        logger.info(f"Computed features for {track_features.count():,} tracks")
-        
-        # Create train/test split
-        logger.info("Creating train/test split (80/20)...")
-        
-        # For each playlist, hold out last 20% of tracks
-        window_spec = Window.partitionBy("pid").orderBy("position")
+        # Simple split based on position
+        window_spec = Window.partitionBy("playlist_idx").orderBy("position")
         interactions_with_rank = indexed_df.withColumn(
             "rank", F.row_number().over(window_spec)
         ).withColumn(
-            "max_rank", F.max("rank").over(Window.partitionBy("pid"))
+            "max_rank", F.max("rank").over(Window.partitionBy("playlist_idx"))
         )
         
-        # Split based on position in playlist
+        # Split 80/20
         train_df = interactions_with_rank.filter(
             F.col("rank") <= F.col("max_rank") * 0.8
-        )
+        ).select("playlist_idx", "track_idx", "track_uri", "position")
+        
         test_df = interactions_with_rank.filter(
             F.col("rank") > F.col("max_rank") * 0.8
-        )
+        ).select("playlist_idx", "track_idx", "track_uri", "position")
         
         train_count = train_df.count()
         test_count = test_df.count()
         logger.info(f"Train set: {train_count:,} interactions")
         logger.info(f"Test set: {test_count:,} interactions")
         
-        # Step 6: Save processed data
-        logger.info("Step 6/6: Saving processed data to HDFS...")
+        # Step 6: Save ONLY ESSENTIAL data with compression
+        logger.info("Saving essential data with compression...")
         
-        # Save DataFrames
-        indexed_df.write.mode("overwrite").parquet(f"{HDFS_BASE}/processed/interactions")
-        train_df.write.mode("overwrite").parquet(f"{HDFS_BASE}/processed/train")
-        test_df.write.mode("overwrite").parquet(f"{HDFS_BASE}/processed/test")
-        track_features.write.mode("overwrite").parquet(f"{HDFS_BASE}/processed/track_features")
-        playlist_meta.write.mode("overwrite").parquet(f"{HDFS_BASE}/processed/playlist_features")
+        # Save core datasets with compression
+        train_df.write.mode("overwrite") \
+            .option("compression", "snappy") \
+            .parquet(f"{HDFS_BASE}/processed/train")
         
-        # Save index mappings
-        playlist_with_idx.write.mode("overwrite").parquet(f"{HDFS_BASE}/processed/playlist_index")
-        track_with_idx.write.mode("overwrite").parquet(f"{HDFS_BASE}/processed/track_index")
+        test_df.write.mode("overwrite") \
+            .option("compression", "snappy") \
+            .parquet(f"{HDFS_BASE}/processed/test")
+        
+        # Save index mappings (needed for submission)
+        playlist_with_idx.write.mode("overwrite") \
+            .option("compression", "snappy") \
+            .parquet(f"{HDFS_BASE}/processed/playlist_index")
+        
+        track_with_idx.write.mode("overwrite") \
+            .option("compression", "snappy") \
+            .parquet(f"{HDFS_BASE}/processed/track_index")
+        
         
         # Calculate elapsed time
         elapsed_time = (datetime.now() - start_time).total_seconds()
         
         # Print summary
         logger.info("="*60)
-        logger.info(" PREPROCESSING COMPLETE!")
+        logger.info(" STORAGE-OPTIMIZED PREPROCESSING COMPLETE!")
         logger.info("="*60)
         logger.info(f"Processing time: {elapsed_time:.2f} seconds")
         logger.info(f"Sample rate: {sample_rate*100}%")
-        logger.info(f"Total playlists: {total_playlists:,}")
-        logger.info(f"Total tracks: {num_unique_tracks:,}")
-        logger.info(f"Total interactions: {total_interactions:,}")
-        logger.info(f"Train interactions: {train_count:,}")
-        logger.info(f"Test interactions: {test_count:,}")
+        logger.info(f"Storage optimization: Compressed parquet, minimal files")
         logger.info("="*60)
-        logger.info("Data saved to HDFS:")
-        logger.info(f"  {HDFS_BASE}/processed/interactions")
+        logger.info("Essential files saved (compressed):")
         logger.info(f"  {HDFS_BASE}/processed/train")
-        logger.info(f"  {HDFS_BASE}/processed/test")
-        logger.info(f"  {HDFS_BASE}/processed/track_features")
-        logger.info(f"  {HDFS_BASE}/processed/playlist_features")
+        logger.info(f"  {HDFS_BASE}/processed/test") 
         logger.info(f"  {HDFS_BASE}/processed/playlist_index")
         logger.info(f"  {HDFS_BASE}/processed/track_index")
+        logger.info("Files NOT saved to reduce storage:")
+        logger.info("  - interactions (removed)")
+        logger.info("  - track_features (removed)")
+        logger.info("  - playlist_features (removed)")
         logger.info("="*60)
         
         # Stop Spark session

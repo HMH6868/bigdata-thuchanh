@@ -1,9 +1,3 @@
-#!/usr/bin/env python3
-"""
-Upload Spotify Million Playlist Dataset to HDFS
-Optimized for Windows and memory efficiency
-"""
-
 import os
 import json
 import subprocess

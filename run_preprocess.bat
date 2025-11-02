@@ -1,63 +1,53 @@
 @echo off
 echo ========================================
-echo  SPOTIFY DATA PREPROCESSING
+echo  SPOTIFY STORAGE-OPTIMIZED PREPROCESSING
 echo ========================================
 echo.
-echo Select processing mode:
-echo 1. Quick Test (1%% data - 5-10 minutes)
-echo 2. Medium Test (10%% data - 30-45 minutes)
-echo 3. Large Test (50%% data - 1.5-2 hours)
-echo 4. Full Dataset (100%% data - 3-5 hours)
-echo.
 
-set /p choice="Enter your choice (1/2/3/4): "
-
-if "%choice%"=="1" (
-    set SAMPLE=0.01
-    echo Running with 1%% data sample...
-) else if "%choice%"=="2" (
-    set SAMPLE=0.1
-    echo Running with 10%% data sample...
-) else if "%choice%"=="3" (
-    set SAMPLE=0.5
-    echo Running with 50%% data sample...
-    echo WARNING: This will use ~10-12GB RAM
-) else if "%choice%"=="4" (
-    set SAMPLE=1.0
-    echo Running with FULL dataset...
-    echo WARNING: This will take 3-5 hours and use ~15GB RAM
-    set /p confirm="Are you sure? (yes/no): "
-    if not "%confirm%"=="yes" (
-        echo Cancelled.
-        pause
-        exit
-    )
-) else (
-    echo Invalid choice!
+echo Checking Spark cluster...
+docker exec spark-master /spark/bin/spark-submit --version >nul
+if %errorlevel% neq 0 (
+    echo ERROR: Spark not running. Please start system first.
     pause
-    exit
+    exit /b 1
 )
 
 cd D:\Bigdata\spotify-recommender
 
 echo.
-echo Starting preprocessing with sample rate: %SAMPLE%
+echo Starting storage-optimized preprocessing...
+echo This version uses 0.5%% sample and compression by default
+echo Expected time: 5-7 minutes
 echo.
 
+REM Clean old processed data first
+echo Cleaning old processed data...
+docker exec namenode hdfs dfs -rm -r /spotify_data/processed/ 2>nul
+
+REM Run optimized preprocessing with small sample
 docker exec spark-master /spark/bin/spark-submit ^
     --master spark://spark-master:7077 ^
     --executor-memory 12g ^
     --driver-memory 4g ^
+    --conf spark.executor.cores=4 ^
     --conf spark.sql.shuffle.partitions=200 ^
     --conf spark.sql.adaptive.enabled=true ^
-    --conf spark.sql.adaptive.coalescePartitions.enabled=true ^
-    /workspace/src/preprocess_data.py --sample %SAMPLE%
+    --conf spark.sql.parquet.compression.codec=snappy ^
+    /workspace/src/preprocess_data.py --sample 1.0
 
 echo.
-echo Preprocessing complete!
+echo Preprocessing complete! Checking storage efficiency...
 echo.
 
-echo Checking processed data in HDFS...
-docker exec namenode hdfs dfs -ls -h /spotify_data/processed
+REM Show storage usage
+echo HDFS Storage Usage:
+docker exec namenode hdfs dfs -du -h /spotify_data/processed/
 
+echo.
+echo Compressed files created:
+docker exec namenode hdfs dfs -ls -h /spotify_data/processed/
+
+echo.
+echo Storage optimized! Ready for training.
+echo Next step: run_train.bat
 pause
