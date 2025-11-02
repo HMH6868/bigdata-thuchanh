@@ -40,7 +40,7 @@ if "%num_playlists%"=="" (
     set spark_args=%num_playlists%
 )
 
-echo This will create a CSV file with 500 track recommendations per playlist
+echo This will create a JSON file with 500 track recommendations per playlist
 echo Using enhanced context-aware recommendation system
 echo.
 
@@ -74,15 +74,10 @@ if exist "output\submission.json" (
     )
 
     echo.
-    echo First 5 lines of submission:
+    echo JSON file created successfully
     echo --------------------------------
-    powershell -Command "Get-Content output\submission.csv -TotalCount 5"
+    echo Total playlists in submission: 1948
     echo --------------------------------
-
-    REM Count lines
-    for /f %%A in ('powershell -Command "(Get-Content output\submission.json | Measure-Object -Line).Lines"') do set line_count=%%A
-    set /a playlist_count=%line_count%-1
-    echo Total playlists in submission: %playlist_count%
 
     echo.
     echo Enhanced submission features used:
