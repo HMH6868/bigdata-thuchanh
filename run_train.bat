@@ -23,13 +23,15 @@ echo.
 REM Run training with storage optimization
 docker exec spark-master /spark/bin/spark-submit ^
     --master spark://spark-master:7077 ^
-    --executor-memory 12g ^
+    --executor-memory 14g ^
     --driver-memory 4g ^
     --conf spark.executor.cores=4 ^
-    --conf spark.sql.shuffle.partitions=200 ^
+    --conf spark.sql.shuffle.partitions=150 ^
     --conf spark.sql.adaptive.enabled=true ^
     --conf spark.driver.maxResultSize=2g ^
     --conf spark.sql.parquet.compression.codec=snappy ^
+    --conf spark.executor.memoryFraction=0.8 ^
+    --conf spark.sql.adaptive.advisoryPartitionSizeInBytes=128MB ^
     /workspace/src/train_model.py
 
 echo.

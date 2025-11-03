@@ -1,46 +1,40 @@
 @echo off
+echo.
 echo ========================================
-echo  SPOTIFY MODEL EVALUATION (MAP)
+echo  SPOTIFY SAFE EVALUATION  
 echo ========================================
 echo.
 
 echo Checking if model exists...
-docker exec namenode hdfs dfs -ls /spotify_data/processed/model/recommendations_final >nul
+
+REM Check model exists  
+docker exec namenode hdfs dfs -test -d /spotify_data/processed/model/als_model
 if %errorlevel% neq 0 (
     echo ERROR: No trained model found. Please run training first.
     pause
     exit /b 1
 )
 
-cd D:\Bigdata\spotify-recommender
+echo Model found! Starting evaluation...
 
+cd /d D:\Bigdata\spotify-recommender
 echo.
-echo Starting model evaluation...
-echo This will calculate MAP@500 and other metrics
-echo Expected time: 2-5 minutes
+echo Starting SAFE evaluation...
+echo Expected time: 3-5 minutes
+echo RAM usage: Up to 12GB
 echo.
 
-REM Run evaluation
+REM Safe evaluation settings
 docker exec spark-master /spark/bin/spark-submit ^
     --master spark://spark-master:7077 ^
-    --executor-memory 8g ^
-    --driver-memory 4g ^
-    --conf spark.executor.cores=4 ^
+    --executor-memory 10g ^
+    --driver-memory 3g ^
+    --conf spark.executor.cores=3 ^
     --conf spark.sql.shuffle.partitions=100 ^
     --conf spark.sql.adaptive.enabled=true ^
     --conf spark.driver.maxResultSize=2g ^
     /workspace/src/evaluate_model.py
 
 echo.
-echo Evaluation complete!
-echo.
-
-echo Checking evaluation results...
-docker exec namenode hdfs dfs -ls -h /spotify_data/processed/model/evaluation_results
-
-echo.
-echo ========================================
-echo Model evaluation finished!
-echo Check the logs above for MAP@500 score
-echo ========================================
+echo SAFE evaluation complete!
 pause

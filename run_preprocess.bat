@@ -14,12 +14,6 @@ if %errorlevel% neq 0 (
 
 cd D:\Bigdata\spotify-recommender
 
-echo.
-echo Starting storage-optimized preprocessing...
-echo This version uses 0.5%% sample and compression by default
-echo Expected time: 5-7 minutes
-echo.
-
 REM Clean old processed data first
 echo Cleaning old processed data...
 docker exec namenode hdfs dfs -rm -r /spotify_data/processed/ 2>nul

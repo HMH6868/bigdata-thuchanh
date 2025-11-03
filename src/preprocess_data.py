@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 def main():
     """Main execution - storage optimized"""
     # Default to smaller sample to save storage
-    sample_rate = 0.005  # 0.5% instead of 1%
+    sample_rate = 1.0  
     if len(sys.argv) > 1:
         for i, arg in enumerate(sys.argv):
             if arg == '--sample' and i + 1 < len(sys.argv):

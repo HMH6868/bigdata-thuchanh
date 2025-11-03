@@ -39,7 +39,7 @@ def save_json_submission(results, output_file):
             "submission_info": {
                 "generated_at": datetime.now().isoformat(),
                 "total_playlists": len(results),
-                "recommendations_per_playlist": 500,
+                "recommendations_per_playlist": 100,
                 "model_type": "Hybrid_Collaborative_Filtering"
             },
             "playlists": []
@@ -165,7 +165,7 @@ def main():
             for track_uri in candidate_tracks:
                 if track_uri not in existing_tracks:
                     recommendations.append(track_uri)
-                    if len(recommendations) >= 500:
+                    if len(recommendations) >= 100:
                         break
             
             # Ensure exactly 500
@@ -174,11 +174,11 @@ def main():
                     if (track_uri not in recommendations and 
                         track_uri not in existing_tracks):
                         recommendations.append(track_uri)
-                        if len(recommendations) >= 500:
+                        if len(recommendations) >= 100:
                             break
                 break
             
-            recommendations = recommendations[:500]
+            recommendations = recommendations[:100]
             
             # Add to results
             results.append({
